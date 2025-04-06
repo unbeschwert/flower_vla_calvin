@@ -44,7 +44,7 @@ Key architectural components:
 ## Installation
 To begin, clone this repository locally
 ```bash
-git clone --recurse-submodules git@github.com:mbreuss/flower_vla_calvin
+git clone --recurse-submodules git@github.com:intuitive-robots/flower_vla_calvin.git
 export flower_calvin_ROOT=$(pwd)/flower_vla_calvin
 
 ```
