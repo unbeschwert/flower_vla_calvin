@@ -209,7 +209,8 @@ License: [https://github.com/Lifelong-Robot-Learning/LIBERO?tab=MIT-1-ov-file](h
 
 #### Mimictest 
 
-[mimictest](https://github.com/EDiRobotics/mimictest)
+Original: [mimictest](https://github.com/EDiRobotics/mimictest)
+License: [license](https://github.com/EDiRobotics/mimictest?tab=Apache-2.0-1-ov-file)
 
 #### HULC
 Original: [https://github.com/lukashermann/hulc](https://github.com/lukashermann/hulc)
@@ -225,7 +226,7 @@ License: [https://github.com/intuitive-robots/FLOWER_Diffusion_Policy/blob/main/
 
 ## Citation
 
-If you found the code usefull, please cite our work:
+If you found the code usefull, please cite our work: (arxiv coming very soon)
 
 ```bibtex
 @inproceedings{
