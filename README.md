@@ -189,6 +189,7 @@ Sometimes this causes problems for the python env so just delete it:
 ```python
 log.info(f"Using calvin_env with commit {get_git_commit_hash(Path(calvin_env.__file__))}.")
 ```
+The path for this line is in the CALVIN env repo: https://github.com/mees/calvin_env/blob/797142c588c21e76717268b7b430958dbd13bf48/calvin_env/envs/play_table_env.py#L72
 
 ---
 
