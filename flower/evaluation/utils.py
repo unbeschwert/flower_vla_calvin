@@ -65,7 +65,7 @@ def load_pl_module_from_checkpoint(
     filepath: Union[Path, str],
     epoch: int = 1,
     overwrite_cfg: dict = {},
-    use_ema_weights: bool = False
+    use_ema_weights: bool = True
 ):
     if isinstance(filepath, str):
         filepath = Path(filepath)
@@ -163,10 +163,33 @@ def get_default_mode_and_env(train_folder, dataset_path, checkpoint, env=None, l
     if train_folder_path.suffix == '.yaml':
         train_folder_path = train_folder_path.parent.parent  # Go up two levels from config.yaml
     
-    # Now construct the correct path to the config.yaml file
-    train_cfg_path = train_folder_path / ".hydra/config.yaml"
-    train_cfg_path = format_sftp_path(train_cfg_path)
+    # Determine config format and location
+    train_cfg_path = None
     
+    # Check for HuggingFace format first (config.yaml in same directory)
+    hf_config_path = train_folder_path / "config.yaml"
+    if hf_config_path.exists():
+        # HuggingFace format - config.yaml directly in the folder
+        train_cfg_path = hf_config_path
+        print(f"Detected HuggingFace format")
+    elif (train_folder_path / ".hydra").exists():
+        # Hydra format - config.yaml in .hydra subdirectory
+        train_cfg_path = train_folder_path / ".hydra/config.yaml"
+        print(f"Detected Hydra format")
+    else:
+        # Fallback: try to find .hydra directory in parent directories
+        current_dir = train_folder_path
+        for _ in range(3):  # Look up to 3 levels up
+            if (current_dir / ".hydra").exists():
+                train_cfg_path = current_dir / ".hydra/config.yaml"
+                print(f"Found Hydra config in parent directory: {current_dir}")
+                break
+            current_dir = current_dir.parent
+        
+        if train_cfg_path is None:
+            raise ValueError(f"Could not find config.yaml in either HuggingFace format ({hf_config_path}) or Hydra format ({train_folder_path}/.hydra/config.yaml)")
+    
+    train_cfg_path = format_sftp_path(train_cfg_path)
     print(f"Loading config from: {train_cfg_path}")
     
     def_cfg = OmegaConf.load(train_cfg_path)
@@ -213,11 +236,16 @@ def get_default_mode_and_env(train_folder, dataset_path, checkpoint, env=None, l
 
     return model, env, data_module, lang_embeddings
 
+
 def load_mode_from_safetensor(
     filepath: Path,
     overwrite_cfg: dict = {},
 ):
     """Load model from a checkpoint file or directory.
+    
+    Supports two formats:
+    1. Hydra format: Uses .hydra/config.yaml for configuration
+    2. HuggingFace format: Uses config.yaml in the same directory as model.safetensors
     
     Args:
         filepath: Path to the checkpoint file or directory
@@ -228,54 +256,73 @@ def load_mode_from_safetensor(
     """
     filepath = Path(filepath)
     
-    # Determine if we're dealing with a file or directory
+    # Initialize variables
+    ckpt_path = None
+    config_path = None
+    
+    # Determine the format and find config/checkpoint paths
     if filepath.is_file():
-        # If it's a checkpoint file, use its parent directory to find the config
+        # File provided - could be model.safetensors or a hydra checkpoint
         ckpt_path = filepath
-        config_dir = filepath.parent
         
-        # Try to find config in parent directories
-        hydra_dir = None
-        current_dir = config_dir
-        for _ in range(3):  # Look up to 3 levels up
-            if (current_dir / ".hydra").exists():
-                hydra_dir = current_dir / ".hydra"
-                break
-            current_dir = current_dir.parent
+        # Check if it's HuggingFace format (config.yaml in same directory)
+        hf_config_path = filepath.parent / "config.yaml"
+        print(f"Checking for HF format: {filepath.name} == 'model.safetensors' and {hf_config_path} exists: {hf_config_path.exists()}")
         
-        if hydra_dir is None:
-            # If we can't find .hydra directory, try looking at a common pattern
-            # From the filepath, try to find base directory (e.g., calvin_abcd)
-            parts = filepath.parts
-            try:
-                # Look for "best_checkpoints" in the path
-                idx = parts.index("best_checkpoints")
-                if idx + 1 < len(parts):
-                    base_dir = Path(*parts[:idx+2])
-                    if (base_dir / ".hydra").exists():
-                        hydra_dir = base_dir / ".hydra"
-            except ValueError:
-                pass
-                
-        if hydra_dir is None:
-            raise ValueError(f"Could not find .hydra directory for checkpoint: {str(filepath)}")
-            
-        config_path = hydra_dir / "config.yaml"
-    elif filepath.is_dir():
-        # If it's a directory, look for .hydra/config.yaml
-        ckpt_path = filepath
-        if (filepath / ".hydra").exists():
-            config_path = filepath / ".hydra/config.yaml"
+        if filepath.name == "model.safetensors" and hf_config_path.exists():
+            # HuggingFace format
+            config_path = hf_config_path
+            print(f"Detected HuggingFace format")
         else:
-            raise ValueError(f"Directory does not contain .hydra/config.yaml: {str(filepath)}")
+            # Assume Hydra format - find .hydra directory
+            print(f"Falling back to Hydra format detection")
+            config_path = _find_hydra_config(filepath)
+            print(f"Detected Hydra format")
+            
+    elif filepath.is_dir():
+        # Directory provided
+        
+        # Check for HuggingFace format first (model.safetensors + config.yaml in same dir)
+        hf_model_path = filepath / "model.safetensors"
+        hf_config_path = filepath / "config.yaml"
+        
+        if hf_model_path.exists() and hf_config_path.exists():
+            # HuggingFace format
+            ckpt_path = hf_model_path
+            config_path = hf_config_path
+            print(f"Detected HuggingFace format")
+        elif (filepath / ".hydra").exists():
+            # Hydra format
+            ckpt_path = filepath
+            config_path = filepath / ".hydra/config.yaml"
+            print(f"Detected Hydra format")
+        else:
+            raise ValueError(f"Directory does not contain expected format. "
+                           f"Expected either: model.safetensors + config.yaml OR .hydra/config.yaml in: {str(filepath)}")
     else:
         raise ValueError(f"Path does not exist: {str(filepath)}")
     
+    if config_path is None:
+        raise ValueError(f"Could not determine config path for: {str(filepath)}")
+    
     print(f"Loading config from: {config_path}")
+    
+    # Load YAML config (both formats use YAML now)
     config = OmegaConf.load(config_path)
     
     print(f"Loading model from {ckpt_path}")
-    load_cfg = OmegaConf.create({**OmegaConf.to_object(config.model), **{"optimizer": None}, **overwrite_cfg})
+    
+    # Handle different config structures
+    if _is_hf_format(config_path):
+        # HuggingFace format - but config still has nested structure with 'model' key
+        if hasattr(config, 'model'):
+            load_cfg = OmegaConf.create({**OmegaConf.to_object(config.model), **{"optimizer": None}, **overwrite_cfg})
+        else:
+            # Fallback: config is directly the model config
+            load_cfg = OmegaConf.create({**OmegaConf.to_object(config), **{"optimizer": None}, **overwrite_cfg})
+    else:
+        # Hydra format - model config is under 'model' key
+        load_cfg = OmegaConf.create({**OmegaConf.to_object(config.model), **{"optimizer": None}, **overwrite_cfg})
     
     # Remove 'ckpt_path' if it exists in load_cfg to avoid the error
     if 'ckpt_path' in load_cfg:
@@ -289,7 +336,6 @@ def load_mode_from_safetensor(
 
     print(f"Finished loading model {ckpt_path}")
     return model
-
 
 def join_vis_lang(img, lang_text):
     """Takes as input an image and a language instruction and visualizes them with cv2"""
@@ -427,3 +473,43 @@ def get_env_state_for_initial_condition(initial_condition):
         scene_obs[23] = np.random.uniform(*block_rot_z_range)
 
     return robot_obs, scene_obs
+
+
+def _find_hydra_config(filepath: Path) -> Path:
+    """Find .hydra/config.yaml for a given checkpoint file."""
+    config_dir = filepath.parent
+    
+    # Try to find config in parent directories
+    hydra_dir = None
+    current_dir = config_dir
+    for _ in range(3):  # Look up to 3 levels up
+        if (current_dir / ".hydra").exists():
+            hydra_dir = current_dir / ".hydra"
+            break
+        current_dir = current_dir.parent
+    
+    if hydra_dir is None:
+        # If we can't find .hydra directory, try looking at a common pattern
+        # From the filepath, try to find base directory (e.g., calvin_abcd)
+        parts = filepath.parts
+        try:
+            # Look for "best_checkpoints" in the path
+            idx = parts.index("best_checkpoints")
+            if idx + 1 < len(parts):
+                base_dir = Path(*parts[:idx+2])
+                if (base_dir / ".hydra").exists():
+                    hydra_dir = base_dir / ".hydra"
+        except ValueError:
+            pass
+            
+    if hydra_dir is None:
+        raise ValueError(f"Could not find .hydra directory for checkpoint: {str(filepath)}")
+        
+    return hydra_dir / "config.yaml"
+
+
+def _is_hf_format(config_path: Path) -> bool:
+    """Determine if this is HuggingFace format based on config location."""
+    # HuggingFace format: config.yaml is in the same directory as model.safetensors
+    # Hydra format: config.yaml is in .hydra subdirectory
+    return config_path.parent.name != ".hydra"

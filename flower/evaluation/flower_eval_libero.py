@@ -46,7 +46,6 @@ from flower.rollout.rollout_video import RolloutVideo
 
 logger = logging.getLogger(__name__)
 
-log_print = logging.getLogger(__name__)
 
 def get_log_dir(log_dir):
     if log_dir is not None:
@@ -126,18 +125,21 @@ class EvaluateLibero:
             self.benchmark = get_benchmark(self.benchmark_name)(self.eval_sequences)
 
     def start(self) -> None:
-
         successes = self.evaluate_policy(self.model, store_video=self.num_videos)
-
+        
         result_array = sum(successes) / len(successes)
-
-        # print(f"number of rollouts: {len(successes)}")
-        log_print(f"eval_lh/avg_seq_len success rate {torch.tensor(result_array)}")
-        wandb.log("eval_lh/avg_seq_len", torch.tensor(result_array), on_epoch=True, sync_dist=True)
-
+        
+        # Fix: Use colon instead of comma for dictionary
+        wandb.log({"eval_lh/avg_seq_len": torch.tensor(result_array)})
+        
         for success, task_name in zip(successes, self.task_names):
-            log_print(f"eval_lh/sr_{task_name} with success {success}")
-            wandb.log(f"eval_lh/sr_{task_name}", success, on_step=False, sync_dist=True)
+            wandb.log({f"eval_lh/sr_{task_name}": success})
+            
+        logger.info(f"eval_lh/avg_seq_len success rate {torch.tensor(result_array)}")
+        
+        for success, task_name in zip(successes, self.task_names):
+            logger.info(f"eval_lh/sr_{task_name} with success {success}")
+        
         print('done')
         print()
 
@@ -149,8 +151,10 @@ class EvaluateLibero:
             task_i = self.benchmark_instance.get_task(idx)
             task_emb = self.benchmark_instance.task_embs[idx]
             task_str = f"k{self.all_tasks[-1]}_p{idx}"
-            log_print.info(f"starting to evaluate: {task_name}")
+            logger.info(f"starting to evaluate: {task_name}")
             success_rate = self.evaluate_task(model, task_i, task_emb, task_str, idx, store_video=store_video)
+            print(f"Task {task_name} success rate: {success_rate:.4f}")
+            logger.info(f"Task {task_name} success rate: {success_rate:.4f}")
             successes.append(success_rate)
 
         return successes
@@ -178,19 +182,14 @@ class EvaluateLibero:
             raise Exception("Failed to create environment")
 
         ### Evaluation loop
-        # get fixed init states to control the experiment randomness
-        init_states_path = os.path.join(
-            self.init_states_folder, task_i.problem_folder, task_i.init_states_file
-        )
-        init_states = torch.load(init_states_path)
-        
-        # Debug the init_states format
-        print(f"Init state type: {type(init_states)}")
-        if isinstance(init_states, list):
-            print(f"Number of states: {len(init_states)}")
-            print(f"First state format: {type(init_states[0])}")
-        elif isinstance(init_states, np.ndarray):
-            print(f"Init state shape: {init_states.shape}")
+        # Use LIBERO's native API to get initial states in the correct format
+        try:
+            initial_states = self.benchmark_instance.get_task_init_states(idx)
+            print(f"Using LIBERO native initial states, count: {len(initial_states)}")
+        except Exception as e:
+            print(f"Could not get LIBERO initial states: {e}")
+            print("Will use random resets instead")
+            initial_states = None
         
         num_success = 0
         for i in tqdm(range(self.n_eval), desc="Evaluating"):
@@ -209,44 +208,17 @@ class EvaluateLibero:
             steps = 0
             model.reset()
             
-            # Safely handle setting initial state
-            try:
-                if isinstance(init_states, list) and i < len(init_states):
-                    # If it's a list of states, use the i-th one
-                    obs = env.set_init_state(init_states[i])
-                elif isinstance(init_states, dict):
-                    # If it's a dictionary state representation
-                    obs = env.set_init_state(init_states)
-                elif isinstance(init_states, np.ndarray):
-                    # If it's a flattened array format
-                    # Check if we need to extract just the time component
-                    try:
-                        # Try direct method first
-                        obs = env.set_init_state(init_states)
-                    except TypeError as e:
-                        if "time" in str(e):
-                            # If the error is related to time attribute
-                            state_dict = env.get_sim_state()
-                            # Assuming time is the first element of the array
-                            if isinstance(state_dict, dict) and 'time' in state_dict:
-                                state_dict['time'] = float(init_states[0])
-                                env.set_state(state_dict)
-                                obs = env.get_obs()
-                            else:
-                                # Fall back to normal reset
-                                obs = env.reset()
-                        else:
-                            # Different issue, fall back to reset
-                            print(f"State setting error: {e}")
-                            obs = env.reset()
-                else:
-                    # Unknown format, just reset
-                    print("Unknown init_states format, falling back to reset")
-                    obs = env.reset()
-            except Exception as e:
-                print(f"Error setting initial state: {e}")
-                print(f"Falling back to reset")
-                obs = env.reset()
+            # Simple state setting using LIBERO's native format
+            if initial_states is not None and i < len(initial_states):
+                try:
+                    obs = env.set_init_state(initial_states[i])
+                    print(f"Successfully set initial state for episode {i}")
+                except Exception as e:
+                    print(f"Failed to set initial state: {e}, using reset")
+                    obs = env.get_observation()
+            else:
+                print(f"No initial state available for episode {i}, using reset")
+                obs = env.get_observation()
 
             # dummy actions [env_num, 7] all zeros for initial physics simulation
             dummy = np.zeros(7)

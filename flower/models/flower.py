@@ -159,20 +159,83 @@ class FLOWERVLA(pl.LightningModule):
     def _load_pretrained_weights(self, pretrained_model_path: str, mean_resizing: bool = False):
         """Loads pretrained weights, handling key mismatches (e.g., different prefixes)."""
         print(f"Loading pretrained weights from {pretrained_model_path}...")
-
-        # Load checkpoint
-        checkpoint = torch.load(pretrained_model_path, map_location=self.device)
+        # Determine file type and load accordingly
+        if pretrained_model_path.endswith('.safetensors'):
+            # Load safetensors file
+            from safetensors.torch import load_file
+            state_dict = load_file(pretrained_model_path, device=str(self.device))
+            checkpoint = {"state_dict": state_dict}  # Create checkpoint-like structure for compatibility
+            print("Loaded safetensors file")
+        else:
+            # Load PyTorch checkpoint (.pt, .pth, .ckpt)
+            checkpoint = torch.load(pretrained_model_path, map_location=self.device)
+            # Extract the state dict (handle PyTorch Lightning or plain models)
+            state_dict = checkpoint.get("state_dict", checkpoint)
 
         # Extract the state dict (handle PyTorch Lightning or plain models)
         state_dict = checkpoint.get("state_dict", checkpoint)
 
+        if ("callbacks" in checkpoint and 
+                "EMA" in checkpoint["callbacks"] and 
+                "ema_weights" in checkpoint["callbacks"]["EMA"]):
+                
+                print("Found EMA weights in checkpoint, attempting to load them...")
+                ema_weights_list = checkpoint['callbacks']['EMA']['ema_weights']
+                
+                # Get the original state dict to use as a reference for parameter names and shapes
+                original_state_dict = checkpoint.get("state_dict", checkpoint)
+                
+                # Create a new state dict by matching EMA weights with original parameter names
+                state_dict = {}
+                ema_idx = 0
+                
+                for param_name, original_param in original_state_dict.items():
+                    if ema_idx < len(ema_weights_list):
+                        ema_weight = ema_weights_list[ema_idx]
+                        
+                        # Check if shapes match
+                        if ema_weight.shape == original_param.shape:
+                            state_dict[param_name] = ema_weight
+                            ema_idx += 1
+                        else:
+                            # Shape mismatch - try to find the correct EMA weight by shape
+                            found_match = False
+                            for temp_idx in range(ema_idx, min(ema_idx + 20, len(ema_weights_list))):
+                                if ema_weights_list[temp_idx].shape == original_param.shape:
+                                    state_dict[param_name] = ema_weights_list[temp_idx]
+                                    # Swap to maintain order
+                                    ema_weights_list[temp_idx], ema_weights_list[ema_idx] = ema_weights_list[ema_idx], ema_weights_list[temp_idx]
+                                    ema_idx += 1
+                                    found_match = True
+                                    break
+                            
+                            if not found_match:
+                                # If no match found, use original parameter
+                                print(f"Warning: No matching EMA weight found for {param_name}, using original")
+                                state_dict[param_name] = original_param
+                    else:
+                        # No more EMA weights available, use original
+                        print(f"Warning: Ran out of EMA weights at {param_name}, using original")
+                        state_dict[param_name] = original_param
+                
+                print(f"Successfully matched {ema_idx} EMA weights out of {len(ema_weights_list)} total")
+
         # Fix key mismatches: remove 'agent.' prefix if it exists
         new_state_dict = {}
+        # Handle language encoder/model naming mismatch
         for key, value in state_dict.items():
             new_key = key.replace("agent.", "")  # Remove 'agent.' if it exists
+            
+            # Handle language encoder/model naming mismatch
+            if "vlm.language_encoder." in new_key:
+                new_key = new_key.replace("vlm.language_encoder.", "vlm.language_model.model.encoder.")
+            elif "vlm.language_model." in new_key and "vlm.language_model.model." not in new_key:
+                # If it's already language_model but missing the nested structure, add it
+                new_key = new_key.replace("vlm.language_model.", "vlm.language_model.model.encoder.")
+                
             new_state_dict[new_key] = value
 
-        # Load the weights, allowing partial matches
+        # Load the state dict with strict=False to handle mismatches
         missing_keys, unexpected_keys = self.load_state_dict(new_state_dict, strict=False)
 
         # Log mismatches for debugging
