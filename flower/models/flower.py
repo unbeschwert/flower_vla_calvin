@@ -229,10 +229,13 @@ class FLOWERVLA(pl.LightningModule):
             # Handle language encoder/model naming mismatch
             if "vlm.language_encoder." in new_key:
                 new_key = new_key.replace("vlm.language_encoder.", "vlm.language_model.model.encoder.")
-            elif "vlm.language_model." in new_key and "vlm.language_model.model." not in new_key:
+            #elif "vlm.language_model." in new_key and "vlm.language_model.model." not in new_key:
                 # If it's already language_model but missing the nested structure, add it
-                new_key = new_key.replace("vlm.language_model.", "vlm.language_model.model.encoder.")
-                
+                #new_key = new_key.replace("vlm.language_model.", "vlm.language_model.model.encoder.")
+            # Handle MLP naming mismatch
+            new_key = new_key.replace(".mlp.c_fc1.", ".mlp.fc1.")
+            new_key = new_key.replace(".mlp.c_fc2.", ".mlp.fc2.")
+            new_key = new_key.replace(".mlp.c_proj.", ".mlp.proj.")
             new_state_dict[new_key] = value
 
         # Load the state dict with strict=False to handle mismatches
