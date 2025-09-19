@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, Tuple, Collection, List
 from functools import partial
 import math
 import functools
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -18,6 +19,7 @@ from einops_exts import rearrange_many
 import wandb
 from timm.layers.mlp import Mlp
 from transformers import AutoModelForCausalLM, AutoProcessor, AutoConfig
+from safetensors.torch import save_model as save_model_as_safetensor
 
 from flower.models.networks.transformers import (
     TimestepEmbedder,
@@ -85,11 +87,21 @@ class FLOWERVLA(pl.LightningModule):
 
         load_pretrained: bool = False,
         pretrained_model_path: str = None,
+
+        # Checkpoint saving configuration
+        save_checkpoint_every_n_steps: int = 1000,
+        checkpoint_save_dir: str = "./checkpoints",
     ):
         super().__init__()
         self.save_hyperparameters()
         # self.automatic_optimization = False
         self.action_space_index = ActionIndex()
+
+        # Checkpoint saving setup
+        self.save_checkpoint_every_n_steps = save_checkpoint_every_n_steps
+        self.checkpoint_save_dir = Path(checkpoint_save_dir)
+        self.checkpoint_save_dir.mkdir(parents=True, exist_ok=True)
+        self.training_steps = 0
         # Initialize model flags and configurations
         self._init_flags(
             use_second_view=use_second_view,
@@ -271,9 +283,9 @@ class FLOWERVLA(pl.LightningModule):
         
         self.format_instruction = functools.partial(
                              generate_policy_prompt,
-                             robot_name="Franka Panda",
+                             robot_name="Dual Franka Panda",
                              action_space="Delta End-Effector",
-                             num_arms="1",
+                             num_arms="2",
                              prompt_style='minimal')
         
         self.use_adaln_cond = self.use_adaln_cond 
@@ -453,6 +465,11 @@ class FLOWERVLA(pl.LightningModule):
         # Log metrics
         self._log_training_metrics(total_loss, action_loss, total_bs)
 
+        # Increment training steps and save checkpoint if needed
+        self.training_steps += 1
+        if self.training_steps % self.save_checkpoint_every_n_steps == 0:
+            self._save_safetensors_checkpoint(self.training_steps)
+
         # Optimization step
         # opt.zero_grad()
         # self.manual_backward(action_loss)
@@ -469,6 +486,99 @@ class FLOWERVLA(pl.LightningModule):
         #     sch.step()
 
         return action_loss
+
+    def _save_safetensors_checkpoint(self, step: int):
+        """Save checkpoint in LeRobot-inspired directory structure (simplified for FLOWER VLA)."""
+        import json
+
+        try:
+            # Create main checkpoint directory (LeRobot-style: {step:06d})
+            checkpoint_dir = self.checkpoint_save_dir / f"{step:06d}"
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+            # === SAVE MODEL WEIGHTS (safetensors format) ===
+            model_path = checkpoint_dir / "model.safetensors"
+            state_dict = self.state_dict()
+            # Filter to only tensors for safetensors
+            filtered_state_dict = {k: v for k, v in state_dict.items()
+                                 if isinstance(v, torch.Tensor)}
+            save_model_as_safetensor(filtered_state_dict, str(model_path))
+
+            # === SAVE MODEL CONFIG (JSON format) ===
+            # Extract hyperparameters from self.hparams if available
+            hparams = getattr(self, 'hparams', {})
+            config_data = {
+                "_target_": "flower.models.flower.FLOWERVLA",
+                "step": step,
+                "model_name": "FLOWERVLA",
+                "architecture": "dual_franka_flow_matching_vla",
+                # Model architecture params
+                "action_dim": hparams.get('action_dim', 14),
+                "lowdim_obs_dim": hparams.get('lowdim_obs_dim', 18),
+                "dit_dim": hparams.get('dit_dim', 1024),
+                "n_heads": hparams.get('n_heads', 16),
+                "n_layers": hparams.get('n_layers', 18),
+                "vlm_path": hparams.get('vlm_path', "microsoft/Florence-2-large"),
+                "multistep": hparams.get('multistep', 10),
+                "act_window_size": hparams.get('act_window_size', 10),
+                "use_second_view": hparams.get('use_second_view', True),
+                "use_causal_attention": hparams.get('use_causal_attention', True),
+                "num_sampling_steps": hparams.get('num_sampling_steps', 4),
+                # Dual-arm specific
+                "robot_type": "dual_franka_panda",
+                "num_arms": 2,
+                # Training metadata
+                "training_step": step,
+                "checkpoint_format": "safetensors",
+                "framework": "pytorch_lightning",
+            }
+
+            config_path = checkpoint_dir / "config.json"
+            with open(config_path, 'w') as f:
+                json.dump(config_data, f, indent=2)
+
+            # === SAVE TRAINING STATE (optional, for resuming) ===
+            training_state = {
+                "step": step,
+                "epoch": getattr(self, 'current_epoch', 0),
+                "global_step": getattr(self, 'global_step', step),
+                "model_parameters": sum(p.numel() for p in self.parameters()),
+                "pytorch_lightning_version": getattr(pl, '__version__', 'unknown'),
+            }
+
+            # Save optimizer state if available (standard PyTorch format)
+            optimizer = self.optimizers()
+            if optimizer is not None:
+                training_state["optimizer_type"] = type(optimizer).__name__
+                optimizer_path = checkpoint_dir / "optimizer.pt"
+                torch.save(optimizer.state_dict(), optimizer_path)
+
+            # Save scheduler state if available
+            scheduler = self.lr_schedulers()
+            if scheduler is not None:
+                training_state["scheduler_type"] = type(scheduler).__name__
+                scheduler_path = checkpoint_dir / "scheduler.pt"
+                torch.save(scheduler.state_dict(), scheduler_path)
+
+            # Save training state metadata
+            training_state_path = checkpoint_dir / "training_state.json"
+            with open(training_state_path, 'w') as f:
+                json.dump(training_state, f, indent=2)
+
+            logger.info(f"✓ Saved checkpoint: {checkpoint_dir}")
+            logger.info(f"  Files saved:")
+            logger.info(f"    ├── model.safetensors     ({model_path.stat().st_size / 1e6:.1f} MB)")
+            logger.info(f"    ├── config.json           (model configuration)")
+            logger.info(f"    ├── training_state.json   (training metadata)")
+            if optimizer is not None:
+                logger.info(f"    ├── optimizer.pt          (optimizer state)")
+            if scheduler is not None:
+                logger.info(f"    └── scheduler.pt          (scheduler state)")
+
+        except Exception as e:
+            logger.error(f"Failed to save checkpoint at step {step}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
 
     def validation_step(self, batch: Dict[str, Dict], batch_idx: int) -> Dict[str, torch.Tensor]:
         """Lightning validation step"""

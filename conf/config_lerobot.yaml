@@ -1,0 +1,107 @@
+defaults:
+  - callbacks: calvin  # Use Calvin callbacks as base
+  - datamodule: lerobot
+  - model: flower
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+
+# Hugging Face dataset configuration
+hf_dataset_name: username-007/bimanual-franka-bin-packing
+root_data_dir: ./data/lerobot_datasets  # Local cache directory
+lang_folder: ""  # Not used in LeRobot format
+
+log_dir: ./logs
+slurm: false
+seed: 242
+device: 'cuda'
+batch_size: 8
+devices: 4
+act_dim: 14
+proprio_dims: 18
+obs_dim: 512
+goal_dim: 512
+obs_seq_len: 1
+act_seq_len: 10
+multistep: 10
+p_last_state: 0
+gen_img_res: 224  # Common resolution for LeRobot datasets
+max_epochs: 35
+rollout_lh_skip_epochs: 19
+num_workers: 12
+benchmark_name: lerobot
+use_extracted_rel_actions: true
+
+# Camera configuration - adjust based on your dataset
+camera_keys:
+  - "observation.images.rgb_static"
+  - "observation.images.rgb_left"
+  - "observation.images.rgb_right"
+
+trainer:
+  devices: ${devices}
+  precision: bf16-mixed
+  max_epochs: ${max_epochs}
+  sync_batchnorm: True
+  accelerator: gpu
+  strategy: "ddp"
+  limit_train_batches: 1000
+  limit_val_batches: 4
+
+logger:
+  _target_: pytorch_lightning.loggers.WandbLogger
+  save_dir: .
+  name: lerobot_flower
+  group: lerobot
+  log_model: false
+  project: ${benchmark_name}
+  entity: your_wandb_entity  # Update this
+  id: ???
+
+hydra:
+  run:
+    dir: ${log_dir}/runs/${now:%Y-%m-%d}/${now:%H-%M-%S}_seed${seed}
+  sweep:
+    dir: ${log_dir}/runs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.override_dirname}
+  job:
+    config:
+      override_dirname:
+        exclude_keys:
+          - log_dir
+          - datamodule.root_data_dir
+          - trainer.devices
+          - datamodule.num_workers
+          - trainer.limit_train_batches
+          - trainer.limit_val_batches
+
+# LeRobot Training Pipeline Configuration
+eval_freq: 20000           # Evaluate every 20k steps
+log_freq: 200             # Log metrics every 200 steps
+save_freq: 20000          # Save checkpoint every 20k steps
+max_steps: 100000         # Total training steps
+output_dir: ./outputs     # Output directory for LeRobot format
+job_name: flower_vla_lerobot  # Job name for tracking
+resume: false             # Resume from checkpoint
+
+# LeRobot Dataset Configuration (for DatasetConfig)
+dataset_repo_id: ${hf_dataset_name}
+train_split: "train"
+val_split: "train"        # Use same split for validation
+image_transforms: null    # Use default transforms
+delta_timestamps: null    # Use default from datamodule
+
+# LeRobot Optimizer Configuration (extracted from model)
+lerobot_optimizer:
+  name: "adamw"
+  lr: ${model.optimizer.learning_rate}
+  weight_decay: ${model.optimizer.transformer_weight_decay}
+  betas: ${model.optimizer.betas}
+
+# LeRobot Scheduler Configuration
+lerobot_scheduler:
+  name: "tri_stage"
+  init_lr: ${model.lr_scheduler.lr_scheduler.init_lr}
+  init_lr_scale: ${model.lr_scheduler.lr_scheduler.init_lr_scale}
+  final_lr_scale: ${model.lr_scheduler.lr_scheduler.final_lr_scale}
+  total_steps: ${model.lr_scheduler.lr_scheduler.total_steps}
+  phase_ratio: ${model.lr_scheduler.lr_scheduler.phase_ratio}

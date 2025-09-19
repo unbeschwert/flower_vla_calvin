@@ -1,0 +1,39 @@
+# LeRobot Dataset Configuration
+_target_: flower.datasets.lerobot_data_module.LeRobotDataModule
+
+# Dataset configuration
+datasets:
+  lang_dataset:
+    _target_: flower.datasets.lerobot_dataset.LeRobotDataset
+    hf_dataset_name: ${hf_dataset_name}
+    obs_space:
+      rgb_obs:
+        - rgb_static
+        - rgb_left
+        - rgb_right
+      depth_obs: {}
+      state_obs:
+        - robot_obs
+      actions:
+        - rel_actions
+    proprio_state:
+      n_state_obs: 18
+    key: lang
+    batch_size: ${batch_size}
+    min_window_size: 1
+    max_window_size: ${act_seq_len}
+    pad: true
+    num_workers: ${num_workers}
+    transforms: ${transforms}
+    camera_keys: ["observation.images.rgb_static", "observation.images.rgb_left", "observation.images.rgb_right"]
+
+# Data loading parameters
+root_data_dir: ${root_data_dir}
+num_workers: ${num_workers}
+shuffle_val: false
+
+# Camera configuration - adjust based on your LeRobot dataset
+camera_keys:
+  - "observation.images.rgb_static"
+  - "observation.images.rgb_left"
+  - "observation.images.rgb_right"
