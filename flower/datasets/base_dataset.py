@@ -1,10 +1,10 @@
+import hashlib
 import logging
 from pathlib import Path
 from typing import Dict, Tuple, Union
 
 import numpy as np
 from omegaconf import DictConfig
-import pyhash
 import torch
 from torch.utils.data import Dataset
 
@@ -17,7 +17,6 @@ from flower.datasets.utils.episode_utils import (
     process_state,
 )
 
-hasher = pyhash.fnv1_32()
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +33,10 @@ def get_validation_window_size(idx: int, min_window_size: int, max_window_size: 
         Window size computed with hash function.
     """
     window_range = max_window_size - min_window_size + 1
-    return min_window_size + hasher(str(idx)) % window_range
+    # Create deterministic hash from idx using hashlib
+    hash_obj = hashlib.md5(str(idx).encode())
+    hash_val = int(hash_obj.hexdigest()[:8], 16)  # Use first 8 hex chars
+    return min_window_size + hash_val % window_range
 
 
 class BaseDataset(Dataset):

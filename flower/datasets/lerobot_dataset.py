@@ -7,7 +7,6 @@ import os
 import numpy as np
 import pandas as pd
 from omegaconf import DictConfig
-import pyhash
 from PIL import Image
 
 from flower.datasets.base_dataset import BaseDataset
@@ -20,7 +19,6 @@ from flower.datasets.utils.episode_utils import (
     process_state,
 )
 
-hasher = pyhash.fnv1_32()
 logger = logging.getLogger(__name__)
 
 
