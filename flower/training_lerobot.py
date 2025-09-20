@@ -62,7 +62,7 @@ def setup_logger(cfg: DictConfig, model: LightningModule):
         cfg.logger.id = cfg.logger.name.replace("/", "_")
     return hydra.utils.instantiate(cfg.logger)
 
-@hydra.main(config_path="../conf", config_name="config_lerobot", version_base=None)
+@hydra.main(config_path="../conf", config_name="config_lerobot", version_base="1.1")
 def train(cfg: DictConfig) -> None:
     try:
         # Setup environment

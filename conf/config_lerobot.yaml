@@ -15,7 +15,7 @@ slurm: false
 seed: 242
 device: 'cuda'
 batch_size: 8
-devices: 4
+devices: 1
 act_dim: 14
 proprio_dims: 18
 obs_dim: 512
@@ -66,6 +66,8 @@ hydra:
   job:
     config:
       override_dirname:
+        kv_sep: '='
+        item_sep: ','
         exclude_keys:
           - log_dir
           - datamodule.root_data_dir
